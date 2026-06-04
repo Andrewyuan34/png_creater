@@ -153,6 +153,8 @@ async function init() {
 
   initSplitMode(worker);
   initMergeMode();
+
+  initManualCrop();
 }
 
 function cacheSingleElements() {
@@ -658,6 +660,10 @@ function handleProcessedImage(result) {
   singleElements.transparentPreview.src = canvas.toDataURL();
   singleElements.transparentPreview.hidden = false;
 
+  // 抠图完成：显示手动框选工具条
+  showCropToolbar();
+  singleElements.transparentPreview.onload = () => { syncOverlayToImage(); };
+
   detectAssets();
 }
 
@@ -741,32 +747,11 @@ function openPreviewModal(id) {
   const modalImage = document.getElementById('modal-image');
   const modalInfo = document.getElementById('modal-info');
 
-  // 从整图提取高清素材
+  // 从整图提取高清素材（手动框选候选优先用自带像素）
   const canvas = document.createElement('canvas');
   canvas.width = candidate.w;
   canvas.height = candidate.h;
-  const ctx = canvas.getContext('2d');
-
-  const srcData = singleState.processedImageData;
-  const srcW = srcData?.width || 0;
-  if (srcData) {
-    const imageData = ctx.createImageData(candidate.w, candidate.h);
-    for (let ay = 0; ay < candidate.h; ay++) {
-      for (let ax = 0; ax < candidate.w; ax++) {
-        const srcX = candidate.x + ax;
-        const srcY = candidate.y + ay;
-        if (srcX >= 0 && srcX < srcW && srcY >= 0 && srcY < srcData.height) {
-          const srcIdx = (srcY * srcW + srcX) * 4;
-          const dstIdx = (ay * candidate.w + ax) * 4;
-          imageData.data[dstIdx] = srcData.data[srcIdx];
-          imageData.data[dstIdx + 1] = srcData.data[srcIdx + 1];
-          imageData.data[dstIdx + 2] = srcData.data[srcIdx + 2];
-          imageData.data[dstIdx + 3] = srcData.data[srcIdx + 3];
-        }
-      }
-    }
-    ctx.putImageData(imageData, 0, 0);
-  }
+  drawCandidateToCanvas(candidate, canvas);
 
   modalImage.src = canvas.toDataURL();
   modalInfo.textContent = `${candidate.name} · ${candidate.w} × ${candidate.h} · (${candidate.x}, ${candidate.y})`;
@@ -786,9 +771,6 @@ function renderCandidates() {
     return;
   }
 
-  const srcData = singleState.processedImageData;
-  const srcW = srcData?.width || 0;
-
   for (const candidate of singleState.candidates) {
     const card = document.createElement('div');
     card.className = 'candidate-card';
@@ -798,30 +780,11 @@ function renderCandidates() {
       card.classList.add('selected');
     }
 
-    // 从整图提取像素
+    // 从整图提取像素（手动框选候选优先用自带像素）
     const canvas = document.createElement('canvas');
     canvas.width = candidate.w;
     canvas.height = candidate.h;
-    const ctx = canvas.getContext('2d');
-
-    if (srcData) {
-      const imageData = ctx.createImageData(candidate.w, candidate.h);
-      for (let ay = 0; ay < candidate.h; ay++) {
-        for (let ax = 0; ax < candidate.w; ax++) {
-          const srcX = candidate.x + ax;
-          const srcY = candidate.y + ay;
-          if (srcX >= 0 && srcX < srcW && srcY >= 0 && srcY < srcData.height) {
-            const srcIdx = (srcY * srcW + srcX) * 4;
-            const dstIdx = (ay * candidate.w + ax) * 4;
-            imageData.data[dstIdx] = srcData.data[srcIdx];
-            imageData.data[dstIdx + 1] = srcData.data[srcIdx + 1];
-            imageData.data[dstIdx + 2] = srcData.data[srcIdx + 2];
-            imageData.data[dstIdx + 3] = srcData.data[srcIdx + 3];
-          }
-        }
-      }
-      ctx.putImageData(imageData, 0, 0);
-    }
+    drawCandidateToCanvas(candidate, canvas);
 
     card.innerHTML = `
       <div class="candidate-preview" data-candidate-id="${candidate.id}">
@@ -964,28 +927,7 @@ function downloadSingleCandidate(id) {
   const canvas = document.createElement('canvas');
   canvas.width = candidate.w;
   canvas.height = candidate.h;
-  const ctx = canvas.getContext('2d');
-
-  if (singleState.processedImageData) {
-    const imageData = ctx.createImageData(candidate.w, candidate.h);
-    const srcData = singleState.processedImageData;
-    const srcW = srcData.width;
-    for (let ay = 0; ay < candidate.h; ay++) {
-      for (let ax = 0; ax < candidate.w; ax++) {
-        const srcX = candidate.x + ax;
-        const srcY = candidate.y + ay;
-        if (srcX >= 0 && srcX < srcW && srcY >= 0 && srcY < srcData.height) {
-          const srcIdx = (srcY * srcW + srcX) * 4;
-          const dstIdx = (ay * candidate.w + ax) * 4;
-          imageData.data[dstIdx] = srcData.data[srcIdx];
-          imageData.data[dstIdx + 1] = srcData.data[srcIdx + 1];
-          imageData.data[dstIdx + 2] = srcData.data[srcIdx + 2];
-          imageData.data[dstIdx + 3] = srcData.data[srcIdx + 3];
-        }
-      }
-    }
-    ctx.putImageData(imageData, 0, 0);
-  }
+  drawCandidateToCanvas(candidate, canvas);
 
   const link = document.createElement('a');
   link.download = `${candidate.name}.png`;
@@ -1277,6 +1219,9 @@ function clearUpload() {
     singleElements.transparentPreview.src = '';
     singleElements.transparentPreview.hidden = true;
   }
+  // 退出并隐藏手动框选工具
+  exitCropMode();
+  hideCropToolbar();
 
   // 清空候选素材
   singleElements.candidateCount.textContent = '0';
@@ -1331,33 +1276,12 @@ async function exportCandidates(candidates) {
   const zip = new JSZip();
   const imagesFolder = zip.folder('images');
   const manifest = [];
-  const srcData = singleState.processedImageData;
-  const srcW = srcData?.width || 0;
 
   for (const candidate of candidates) {
     const canvas = document.createElement('canvas');
     canvas.width = candidate.w;
     canvas.height = candidate.h;
-    const ctx = canvas.getContext('2d');
-
-    if (srcData) {
-      const imageData = ctx.createImageData(candidate.w, candidate.h);
-      for (let ay = 0; ay < candidate.h; ay++) {
-        for (let ax = 0; ax < candidate.w; ax++) {
-          const srcX = candidate.x + ax;
-          const srcY = candidate.y + ay;
-          if (srcX >= 0 && srcX < srcW && srcY >= 0 && srcY < srcData.height) {
-            const srcIdx = (srcY * srcW + srcX) * 4;
-            const dstIdx = (ay * candidate.w + ax) * 4;
-            imageData.data[dstIdx] = srcData.data[srcIdx];
-            imageData.data[dstIdx + 1] = srcData.data[srcIdx + 1];
-            imageData.data[dstIdx + 2] = srcData.data[srcIdx + 2];
-            imageData.data[dstIdx + 3] = srcData.data[srcIdx + 3];
-          }
-        }
-      }
-      ctx.putImageData(imageData, 0, 0);
-    }
+    drawCandidateToCanvas(candidate, canvas);
 
     const blob = await new Promise(resolve => canvas.toBlob(resolve, 'image/png'));
     const fileName = `${candidate.name}.png`;
@@ -1580,6 +1504,451 @@ function setupBatchSubscriptions() {
     if (progressSection) progressSection.style.display = 'none';
     showToast(`下载完成！共 ${data.total} 个文件`, 'success');
   });
+}
+
+// ============================================================
+// 手动框选截取工具
+// ============================================================
+// 在抠图后的预览图上用「矩形 / 圆形 / 套索」自定义框选，截取框内图像
+// 并询问是否加入候选素材。手动候选自带像素（manualImageData），形状外
+// 像素透明，因此圆形/套索也能正确预览、下载、导出。
+
+const cropState = {
+  mode: null,            // null | 'rect' | 'ellipse' | 'lasso'
+  dragging: false,
+  start: null,           // {x,y} 覆盖canvas坐标
+  cur: null,             // {x,y}
+  points: [],            // 套索点（覆盖canvas坐标）
+  scale: 1,              // 覆盖canvas坐标 → 原始像素：pixel = canvasCoord / scale
+  offsetX: 0,
+  offsetY: 0,
+  dispW: 0,
+  dispH: 0,
+  nextManualId: 1000000, // 手动候选 id 基数，避免与自动候选小整数冲突
+  manualCount: 0,
+  pending: null,         // 待确认截取结果
+  zoom: 1,
+  fitW: 0,
+  fitH: 0,
+};
+
+const cropEls = {
+  toolbar: null,
+  hint: null,
+  overlay: null,
+  ctx: null,
+  buttons: null,
+  confirmModal: null,
+  confirmImage: null,
+  confirmMeta: null,
+  confirmName: null,
+  zoomVal: null,
+};
+
+function initManualCrop() {
+  cropEls.toolbar = document.getElementById('crop-toolbar');
+  cropEls.hint = document.getElementById('crop-toolbar-hint');
+  cropEls.overlay = document.getElementById('crop-overlay');
+  cropEls.ctx = cropEls.overlay ? cropEls.overlay.getContext('2d') : null;
+  cropEls.buttons = document.querySelectorAll('.crop-tool-btn[data-shape]');
+  cropEls.confirmModal = document.getElementById('crop-confirm-modal');
+  cropEls.confirmImage = document.getElementById('crop-confirm-image');
+  cropEls.confirmMeta = document.getElementById('crop-confirm-meta');
+  cropEls.confirmName = document.getElementById('crop-confirm-name');
+  cropEls.zoomVal = document.getElementById('crop-zoom-val');
+
+  if (!cropEls.overlay || !cropEls.ctx) return;
+
+  // 工具按钮：切换框选模式
+  cropEls.buttons.forEach(btn => {
+    btn.addEventListener('click', () => {
+      const shape = btn.dataset.shape;
+      if (cropState.mode === shape) {
+        exitCropMode();
+      } else {
+        enterCropMode(shape);
+      }
+    });
+  });
+
+  const cancelBtn = document.getElementById('crop-cancel-btn');
+  if (cancelBtn) cancelBtn.addEventListener('click', exitCropMode);
+
+  // 覆盖canvas事件
+  cropEls.overlay.addEventListener('pointerdown', onCropPointerDown);
+  cropEls.overlay.addEventListener('pointermove', onCropPointerMove);
+  cropEls.overlay.addEventListener('pointerup', onCropPointerUp);
+  cropEls.overlay.addEventListener('pointerleave', onCropPointerUp);
+
+  // 窗口缩放时重新对齐覆盖层
+  window.addEventListener('resize', () => {
+    if (cropState.mode) syncOverlayToImage();
+  });
+
+  // 确认对话框按钮
+  const acceptBtn = document.getElementById('crop-confirm-accept');
+  const recropBtn = document.getElementById('crop-confirm-cancel');
+  const modalOverlay = document.getElementById('crop-modal-overlay');
+  if (acceptBtn) acceptBtn.addEventListener('click', acceptCrop);
+  if (recropBtn) recropBtn.addEventListener('click', closeCropConfirm);
+  if (modalOverlay) modalOverlay.addEventListener('click', closeCropConfirm);
+}
+
+function showCropToolbar() {
+  if (cropEls.toolbar) cropEls.toolbar.hidden = false;
+}
+
+function hideCropToolbar() {
+  if (cropEls.toolbar) cropEls.toolbar.hidden = true;
+}
+
+function enterCropMode(shape) {
+  if (!singleState.processedImageData) {
+    showToast('请先完成抠图', 'warning');
+    return;
+  }
+  cropState.mode = shape;
+  cropState.dragging = false;
+  cropState.start = null;
+  cropState.cur = null;
+  cropState.points = [];
+
+  cropEls.buttons.forEach(b => b.classList.toggle('active', b.dataset.shape === shape));
+
+  syncOverlayToImage();
+  cropEls.overlay.hidden = false;
+  clearOverlay();
+
+  const hints = {
+    rect: '拖动鼠标画矩形框',
+    ellipse: '拖动鼠标画圆形/椭圆框',
+    lasso: '长按拖动圈出闭合区域，松开即闭合',
+  };
+  if (cropEls.hint) cropEls.hint.textContent = hints[shape] || '';
+}
+
+function exitCropMode() {
+  cropState.mode = null;
+  cropState.dragging = false;
+  cropState.start = null;
+  cropState.cur = null;
+  cropState.points = [];
+  if (cropEls.buttons) cropEls.buttons.forEach(b => b.classList.remove('active'));
+  if (cropEls.overlay) {
+    clearOverlay();
+    cropEls.overlay.hidden = true;
+  }
+  if (cropEls.hint) cropEls.hint.textContent = '';
+}
+
+// 让覆盖canvas精确盖在预览图的实际显示区域上
+function syncOverlayToImage() {
+  const img = singleElements.transparentPreview;
+  const container = document.getElementById('preview-container');
+  if (!img || !container || img.hidden || !cropEls.overlay) return;
+
+  const cRect = container.getBoundingClientRect();
+  const iRect = img.getBoundingClientRect();
+
+  const left = (iRect.left - cRect.left) + container.scrollLeft;
+  const top = (iRect.top - cRect.top) + container.scrollTop;
+
+  cropEls.overlay.style.left = left + 'px';
+  cropEls.overlay.style.top = top + 'px';
+  cropEls.overlay.width = Math.max(1, Math.round(iRect.width));
+  cropEls.overlay.height = Math.max(1, Math.round(iRect.height));
+  cropEls.overlay.style.width = iRect.width + 'px';
+  cropEls.overlay.style.height = iRect.height + 'px';
+
+  cropState.dispW = iRect.width;
+  cropState.dispH = iRect.height;
+
+  const src = singleState.processedImageData;
+  cropState.scale = src && iRect.width ? (iRect.width / src.width) : 1;
+}
+
+function getCropPoint(e) {
+  const r = cropEls.overlay.getBoundingClientRect();
+  return {
+    x: clampNum(e.clientX - r.left, 0, cropEls.overlay.width),
+    y: clampNum(e.clientY - r.top, 0, cropEls.overlay.height),
+  };
+}
+
+function clampNum(v, min, max) {
+  return v < min ? min : (v > max ? max : v);
+}
+
+function onCropPointerDown(e) {
+  if (!cropState.mode) return;
+  e.preventDefault();
+  cropEls.overlay.setPointerCapture?.(e.pointerId);
+  cropState.dragging = true;
+  const p = getCropPoint(e);
+  if (cropState.mode === 'lasso') {
+    cropState.points = [p];
+  } else {
+    cropState.start = p;
+    cropState.cur = p;
+  }
+}
+
+function onCropPointerMove(e) {
+  if (!cropState.mode || !cropState.dragging) return;
+  const p = getCropPoint(e);
+  if (cropState.mode === 'lasso') {
+    const last = cropState.points[cropState.points.length - 1];
+    if (!last || Math.hypot(p.x - last.x, p.y - last.y) > 3) {
+      cropState.points.push(p);
+    }
+  } else {
+    cropState.cur = p;
+  }
+  drawOverlay();
+}
+
+function onCropPointerUp(e) {
+  if (!cropState.mode || !cropState.dragging) return;
+  cropState.dragging = false;
+  cropEls.overlay.releasePointerCapture?.(e.pointerId);
+  drawOverlay();
+  finishCropSelection();
+}
+
+function clearOverlay() {
+  if (cropEls.ctx) cropEls.ctx.clearRect(0, 0, cropEls.overlay.width, cropEls.overlay.height);
+}
+
+function drawOverlay() {
+  const ctx = cropEls.ctx;
+  if (!ctx) return;
+  clearOverlay();
+  ctx.save();
+  ctx.strokeStyle = '#4f8cff';
+  ctx.lineWidth = 1.5;
+  ctx.setLineDash([5, 4]);
+  ctx.fillStyle = 'rgba(79,140,255,0.12)';
+
+  if (cropState.mode === 'rect' && cropState.start && cropState.cur) {
+    const { x, y, w, h } = rectFrom(cropState.start, cropState.cur);
+    ctx.fillRect(x, y, w, h);
+    ctx.strokeRect(x, y, w, h);
+  } else if (cropState.mode === 'ellipse' && cropState.start && cropState.cur) {
+    const { x, y, w, h } = rectFrom(cropState.start, cropState.cur);
+    ctx.beginPath();
+    ctx.ellipse(x + w / 2, y + h / 2, w / 2, h / 2, 0, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.stroke();
+  } else if (cropState.mode === 'lasso' && cropState.points.length > 1) {
+    ctx.beginPath();
+    ctx.moveTo(cropState.points[0].x, cropState.points[0].y);
+    for (let i = 1; i < cropState.points.length; i++) {
+      ctx.lineTo(cropState.points[i].x, cropState.points[i].y);
+    }
+    if (!cropState.dragging) ctx.closePath();
+    ctx.fill();
+    ctx.stroke();
+  }
+  ctx.restore();
+}
+
+function rectFrom(a, b) {
+  const x = Math.min(a.x, b.x);
+  const y = Math.min(a.y, b.y);
+  const w = Math.abs(a.x - b.x);
+  const h = Math.abs(a.y - b.y);
+  return { x, y, w, h };
+}
+
+// 框选结束：把覆盖canvas坐标的选区映射回原始像素，提取并生成待确认结果
+function finishCropSelection() {
+  const src = singleState.processedImageData;
+  if (!src) return;
+  const scale = cropState.scale || 1;
+
+  let bbox = null;
+  let maskTest = null;
+
+  if (cropState.mode === 'rect') {
+    if (!cropState.start || !cropState.cur) return;
+    const r = rectFrom(cropState.start, cropState.cur);
+    if (r.w < 3 || r.h < 3) return;
+    bbox = canvasRectToPixel(r, scale, src);
+    maskTest = () => true;
+  } else if (cropState.mode === 'ellipse') {
+    if (!cropState.start || !cropState.cur) return;
+    const r = rectFrom(cropState.start, cropState.cur);
+    if (r.w < 3 || r.h < 3) return;
+    bbox = canvasRectToPixel(r, scale, src);
+    const cx = bbox.x + bbox.w / 2;
+    const cy = bbox.y + bbox.h / 2;
+    const rx = bbox.w / 2;
+    const ry = bbox.h / 2;
+    maskTest = (px, py) => {
+      const dx = (px + 0.5 - cx) / rx;
+      const dy = (py + 0.5 - cy) / ry;
+      return dx * dx + dy * dy <= 1;
+    };
+  } else if (cropState.mode === 'lasso') {
+    if (cropState.points.length < 3) { showToast('套索区域太小', 'warning'); return; }
+    const poly = cropState.points.map(p => ({ x: p.x / scale, y: p.y / scale }));
+    bbox = polyBBox(poly, src);
+    if (bbox.w < 3 || bbox.h < 3) { showToast('套索区域太小', 'warning'); return; }
+    maskTest = (px, py) => pointInPoly(px + 0.5, py + 0.5, poly);
+  } else {
+    return;
+  }
+
+  if (!bbox || bbox.w <= 0 || bbox.h <= 0) return;
+
+  const out = new ImageData(bbox.w, bbox.h);
+  const srcW = src.width, srcH = src.height;
+  let hasPixel = false;
+  for (let ay = 0; ay < bbox.h; ay++) {
+    for (let ax = 0; ax < bbox.w; ax++) {
+      const px = bbox.x + ax;
+      const py = bbox.y + ay;
+      if (px < 0 || px >= srcW || py < 0 || py >= srcH) continue;
+      if (!maskTest(px, py)) continue;
+      const si = (py * srcW + px) * 4;
+      const di = (ay * bbox.w + ax) * 4;
+      out.data[di] = src.data[si];
+      out.data[di + 1] = src.data[si + 1];
+      out.data[di + 2] = src.data[si + 2];
+      out.data[di + 3] = src.data[si + 3];
+      if (src.data[si + 3] > 0) hasPixel = true;
+    }
+  }
+
+  if (!hasPixel) {
+    showToast('选区内没有可见像素', 'warning');
+    clearOverlay();
+    return;
+  }
+
+  const c = document.createElement('canvas');
+  c.width = bbox.w;
+  c.height = bbox.h;
+  c.getContext('2d').putImageData(out, 0, 0);
+
+  cropState.pending = {
+    manualImageData: out,
+    x: bbox.x, y: bbox.y, w: bbox.w, h: bbox.h,
+    dataURL: c.toDataURL('image/png'),
+  };
+
+  openCropConfirm();
+}
+
+function canvasRectToPixel(r, scale, src) {
+  let x = Math.round(r.x / scale);
+  let y = Math.round(r.y / scale);
+  let w = Math.round(r.w / scale);
+  let h = Math.round(r.h / scale);
+  x = clampNum(x, 0, src.width - 1);
+  y = clampNum(y, 0, src.height - 1);
+  w = clampNum(w, 1, src.width - x);
+  h = clampNum(h, 1, src.height - y);
+  return { x, y, w, h };
+}
+
+function polyBBox(poly, src) {
+  let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+  for (const p of poly) {
+    if (p.x < minX) minX = p.x;
+    if (p.y < minY) minY = p.y;
+    if (p.x > maxX) maxX = p.x;
+    if (p.y > maxY) maxY = p.y;
+  }
+  const x = clampNum(Math.floor(minX), 0, src.width - 1);
+  const y = clampNum(Math.floor(minY), 0, src.height - 1);
+  const w = clampNum(Math.ceil(maxX) - x, 1, src.width - x);
+  const h = clampNum(Math.ceil(maxY) - y, 1, src.height - y);
+  return { x, y, w, h };
+}
+
+// 射线法判断点是否在多边形内
+function pointInPoly(px, py, poly) {
+  let inside = false;
+  for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
+    const xi = poly[i].x, yi = poly[i].y;
+    const xj = poly[j].x, yj = poly[j].y;
+    const intersect = ((yi > py) !== (yj > py)) &&
+      (px < (xj - xi) * (py - yi) / (yj - yi) + xi);
+    if (intersect) inside = !inside;
+  }
+  return inside;
+}
+
+// ── 确认对话框 ──
+function openCropConfirm() {
+  const p = cropState.pending;
+  if (!p || !cropEls.confirmModal) return;
+  cropEls.confirmImage.src = p.dataURL;
+  cropEls.confirmMeta.textContent = `${p.w} x ${p.h} px`;
+  cropEls.confirmName.value = `手动_${cropState.manualCount + 1}`;
+  cropEls.confirmModal.hidden = false;
+}
+
+function closeCropConfirm() {
+  if (cropEls.confirmModal) cropEls.confirmModal.hidden = true;
+  cropState.pending = null;
+  clearOverlay();
+}
+
+function acceptCrop() {
+  const p = cropState.pending;
+  if (!p) { closeCropConfirm(); return; }
+
+  const name = (cropEls.confirmName.value || '').trim() || `手动_${cropState.manualCount + 1}`;
+  const candidate = {
+    id: cropState.nextManualId++,
+    name,
+    x: p.x, y: p.y, w: p.w, h: p.h,
+    manualImageData: p.manualImageData,
+  };
+  cropState.manualCount++;
+
+  singleState.candidates.push(candidate);
+  singleState.selectedCandidates.add(candidate.id);
+  renderCandidates();
+  singleElements.candidateCount.textContent = singleState.candidates.length;
+  if (singleElements.exportSelectedBtn) {
+    singleElements.exportSelectedBtn.disabled = singleState.candidates.length === 0;
+  }
+
+  closeCropConfirm();
+  showToast(`已加入候选：${name}`, 'success');
+}
+
+// 统一绘制候选到 canvas：手动候选用自带像素，自动候选从整图按 bbox 提取
+function drawCandidateToCanvas(candidate, canvas) {
+  const ctx = canvas.getContext('2d');
+
+  if (candidate.manualImageData) {
+    ctx.putImageData(candidate.manualImageData, 0, 0);
+    return;
+  }
+
+  const srcData = singleState.processedImageData;
+  if (!srcData) return;
+  const srcW = srcData.width;
+  const imageData = ctx.createImageData(candidate.w, candidate.h);
+  for (let ay = 0; ay < candidate.h; ay++) {
+    for (let ax = 0; ax < candidate.w; ax++) {
+      const srcX = candidate.x + ax;
+      const srcY = candidate.y + ay;
+      if (srcX >= 0 && srcX < srcW && srcY >= 0 && srcY < srcData.height) {
+        const srcIdx = (srcY * srcW + srcX) * 4;
+        const dstIdx = (ay * candidate.w + ax) * 4;
+        imageData.data[dstIdx] = srcData.data[srcIdx];
+        imageData.data[dstIdx + 1] = srcData.data[srcIdx + 1];
+        imageData.data[dstIdx + 2] = srcData.data[srcIdx + 2];
+        imageData.data[dstIdx + 3] = srcData.data[srcIdx + 3];
+      }
+    }
+  }
+  ctx.putImageData(imageData, 0, 0);
 }
 
 function showToast(message, type = 'info') {

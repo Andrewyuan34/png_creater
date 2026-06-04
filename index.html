@@ -308,8 +308,23 @@
                 <input type="checkbox" id="light-bg-toggle" checked> 浅色背景
               </label>
             </div>
+            <div class="crop-toolbar" id="crop-toolbar" hidden>
+              <span class="crop-toolbar-label">手动框选：</span>
+              <button class="crop-tool-btn" data-shape="rect" title="矩形框选">▭ 矩形</button>
+              <button class="crop-tool-btn" data-shape="ellipse" title="圆形/椭圆框选">⬭ 圆形</button>
+              <button class="crop-tool-btn" data-shape="lasso" title="自由套索：长按拖动圈出闭合区域">✎ 套索</button>
+              <button class="crop-tool-btn crop-tool-cancel" id="crop-cancel-btn" title="退出框选">✕ 退出</button>
+              <span class="crop-zoom-group">
+                <button class="crop-zoom-btn" id="crop-zoom-out" title="缩小">−</button>
+                <span class="crop-zoom-val" id="crop-zoom-val">100%</span>
+                <button class="crop-zoom-btn" id="crop-zoom-in" title="放大">＋</button>
+                <button class="crop-zoom-btn" id="crop-zoom-reset" title="重置/适应">⤢</button>
+              </span>
+              <span class="crop-toolbar-hint" id="crop-toolbar-hint"></span>
+            </div>
             <div class="preview-container checker-bg" id="preview-container">
               <img id="transparent-preview" class="transparent-preview" hidden>
+              <canvas id="crop-overlay" class="crop-overlay" hidden></canvas>
             </div>
           </div>
 
@@ -563,6 +578,26 @@
   </div>
 
   <div id="toast-container" class="toast-container"></div>
+
+  <!-- 手动框选 · 确认对话框 -->
+  <div id="crop-confirm-modal" class="preview-modal" hidden>
+    <div class="modal-overlay" id="crop-modal-overlay"></div>
+    <div class="modal-content crop-confirm-content">
+      <h3 class="crop-confirm-title">截取结果预览</h3>
+      <div class="crop-confirm-preview checker-bg">
+        <img id="crop-confirm-image" src="" alt="截取预览">
+      </div>
+      <div class="crop-confirm-meta" id="crop-confirm-meta"></div>
+      <div class="crop-confirm-name-row">
+        <label for="crop-confirm-name">名称</label>
+        <input type="text" id="crop-confirm-name" class="crop-confirm-name-input" placeholder="素材名称">
+      </div>
+      <div class="crop-confirm-actions">
+        <button class="btn btn-secondary" id="crop-confirm-cancel">✗ 重新框选</button>
+        <button class="btn btn-primary" id="crop-confirm-accept">✓ 加入候选</button>
+      </div>
+    </div>
+  </div>
 
   <div id="magnifier" class="magnifier" style="display:none">
     <canvas id="mag-canvas" width="140" height="140"></canvas>
