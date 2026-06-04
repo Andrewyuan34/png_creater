@@ -113,22 +113,53 @@
   flex: 1;
   display: flex;
   flex-direction: column;
-  overflow-y: auto;
+  overflow: hidden;
   min-width: 0;
+  min-height: 0;
 }
 
 .preview-section {
   padding: 12px;
-  border-bottom: 1px solid var(--border-default);
-  flex-shrink: 0;
+  flex: 0 0 auto;
+  display: flex;
+  flex-direction: column;
+  min-height: 120px;
+  max-height: 60%;
 }
+
+/* 上下区域之间的可拖拽分隔条 */
+.panel-resizer {
+  height: 8px;
+  flex-shrink: 0;
+  cursor: row-resize;
+  background: var(--border-default);
+  position: relative;
+  transition: background 0.15s;
+}
+.panel-resizer::before {
+  content: '';
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  width: 40px;
+  height: 3px;
+  border-radius: 2px;
+  background: var(--text-muted);
+  opacity: 0.5;
+}
+.panel-resizer:hover,
+.panel-resizer.dragging { background: var(--accent); }
+.panel-resizer:hover::before,
+.panel-resizer.dragging::before { opacity: 0.9; background: #fff; }
 .preview-controls {
   display: flex;
   gap: 12px;
   margin-bottom: 8px;
 }
 .preview-container {
-  min-height: 180px;
+  min-height: 100px;
+  flex: 1;
   border-radius: var(--radius-md);
   display: flex;
   align-items: center;
@@ -136,9 +167,21 @@
   overflow: hidden;
   position: relative;
 }
+/* 放大后允许滚动查看图片各处 */
+.preview-container.zoomed {
+  overflow: auto;
+  align-items: flex-start;
+  justify-content: flex-start;
+}
+/* 放大时图片四周留出可滚动缓冲（具体值由 JS 按容器尺寸设定） */
+.preview-container.zoomed .transparent-preview {
+  margin: var(--pan-pad-y, 0px) var(--pan-pad-x, 0px);
+}
 .preview-container.dark-bg { background: #1a1a1a; }
 .preview-container.light-bg { background: #f0f0f0; }
 .transparent-preview { max-width: 100%; max-height: 380px; object-fit: contain; display: block; }
+/* 放大模式下解除尺寸限制，按 JS 设定的宽高显示 */
+.preview-container.zoomed .transparent-preview { max-width: none; max-height: none; }
 
 /* ── 手动框选工具 ── */
 .crop-toolbar {
@@ -257,6 +300,7 @@
 .candidates-section {
   padding: 12px;
   flex: 1;
+  min-height: 80px;
   overflow-y: auto;
 }
 .candidates-section h3 {
@@ -270,8 +314,6 @@
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
   gap: 12px;
-  max-height: 400px;
-  overflow-y: auto;
 }
 
 /* 大图预览模态框 */

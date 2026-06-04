@@ -155,6 +155,7 @@ async function init() {
   initMergeMode();
 
   initManualCrop();
+  initPanelResizer();
 }
 
 function cacheSingleElements() {
@@ -660,9 +661,9 @@ function handleProcessedImage(result) {
   singleElements.transparentPreview.src = canvas.toDataURL();
   singleElements.transparentPreview.hidden = false;
 
-  // 抠图完成：显示手动框选工具条
+  // 抠图完成：显示手动框选工具条 + 重置缩放
   showCropToolbar();
-  singleElements.transparentPreview.onload = () => { syncOverlayToImage(); };
+  singleElements.transparentPreview.onload = () => { setCropZoom(1); };
 
   detectAssets();
 }
@@ -1218,7 +1219,13 @@ function clearUpload() {
   if (singleElements.transparentPreview) {
     singleElements.transparentPreview.src = '';
     singleElements.transparentPreview.hidden = true;
+    singleElements.transparentPreview.style.width = '';
+    singleElements.transparentPreview.style.height = '';
   }
+  // 重置预览缩放
+  cropState.zoom = 1;
+  if (singleElements.previewContainer) singleElements.previewContainer.classList.remove('zoomed');
+  if (cropEls.zoomVal) cropEls.zoomVal.textContent = '100%';
   // 退出并隐藏手动框选工具
   exitCropMode();
   hideCropToolbar();
@@ -1273,62 +1280,71 @@ async function exportCandidates(candidates) {
 
   showLoading('正在导出素材...');
 
-  const zip = new JSZip();
-  const imagesFolder = zip.folder('images');
-  const manifest = [];
+  try {
+    const zip = new JSZip();
+    const imagesFolder = zip.folder('images');
+    const manifest = [];
 
-  for (const candidate of candidates) {
-    const canvas = document.createElement('canvas');
-    canvas.width = candidate.w;
-    canvas.height = candidate.h;
-    drawCandidateToCanvas(candidate, canvas);
+    for (const candidate of candidates) {
+      const canvas = document.createElement('canvas');
+      canvas.width = candidate.w;
+      canvas.height = candidate.h;
+      drawCandidateToCanvas(candidate, canvas);
 
-    const blob = await new Promise(resolve => canvas.toBlob(resolve, 'image/png'));
-    const fileName = `${candidate.name}.png`;
+      const blob = await new Promise(resolve => canvas.toBlob(resolve, 'image/png'));
+      const fileName = `${candidate.name}.png`;
 
-    imagesFolder.file(fileName, blob);
+      imagesFolder.file(fileName, blob);
 
-    manifest.push({
-      name: candidate.name,
-      file: fileName,
-      x: candidate.x,
-      y: candidate.y,
-      w: candidate.w,
-      h: candidate.h
-    });
+      manifest.push({
+        name: candidate.name,
+        file: fileName,
+        x: candidate.x,
+        y: candidate.y,
+        w: candidate.w,
+        h: candidate.h
+      });
+    }
+
+    // 生成 JSON 数据文件
+    const sourceData = singleState.processedImageData;
+    const sourceName = singleState.fileName || 'source-image';
+    const sourceWidth = sourceData?.width || 0;
+    const sourceHeight = sourceData?.height || 0;
+
+    if (document.getElementById('export-json-hash')?.checked) {
+      const jsonHash = generateTexturePackerJson(manifest, sourceName, sourceWidth, sourceHeight);
+      zip.file('spritesheet.json', JSON.stringify(jsonHash, null, 2));
+    }
+
+    if (document.getElementById('export-json-array')?.checked) {
+      const jsonArray = generateTexturePackerJsonArray(manifest, sourceName, sourceWidth, sourceHeight);
+      zip.file('spritesheet-array.json', JSON.stringify(jsonArray, null, 2));
+    }
+
+    if (document.getElementById('export-css')?.checked) {
+      const css = generateCssSprite(manifest, sourceName);
+      zip.file('sprites.css', css);
+    }
+
+    zip.file('manifest.json', JSON.stringify(manifest, null, 2));
+    zip.file('preview.html', generatePreviewHtml(manifest));
+
+    const content = await zip.generateAsync({ type: 'blob' });
+
+    const link = document.createElement('a');
+    link.download = 'asset-cutout-export.zip';
+    link.href = URL.createObjectURL(content);
+    link.click();
+    URL.revokeObjectURL(link.href);
+
+    showToast(`已导出 ${candidates.length} 个素材`, 'success');
+  } catch (e) {
+    console.error('导出失败:', e);
+    showToast('导出失败：' + (e?.message || e), 'error');
+  } finally {
+    hideLoading();
   }
-
-  // 生成 JSON 数据文件
-  const sourceName = singleState.fileName || 'source-image';
-  const sourceWidth = srcData?.width || 0;
-  const sourceHeight = srcData?.height || 0;
-
-  if (document.getElementById('export-json-hash')?.checked) {
-    const jsonHash = generateTexturePackerJson(manifest, sourceName, sourceWidth, sourceHeight);
-    zip.file('spritesheet.json', JSON.stringify(jsonHash, null, 2));
-  }
-
-  if (document.getElementById('export-json-array')?.checked) {
-    const jsonArray = generateTexturePackerJsonArray(manifest, sourceName, sourceWidth, sourceHeight);
-    zip.file('spritesheet-array.json', JSON.stringify(jsonArray, null, 2));
-  }
-
-  if (document.getElementById('export-css')?.checked) {
-    const css = generateCssSprite(manifest, sourceName);
-    zip.file('sprites.css', css);
-  }
-
-  zip.file('manifest.json', JSON.stringify(manifest, null, 2));
-  zip.file('preview.html', generatePreviewHtml(manifest));
-
-  const content = await zip.generateAsync({ type: 'blob' });
-
-  const link = document.createElement('a');
-  link.download = 'asset-cutout-export.zip';
-  link.href = URL.createObjectURL(content);
-  link.click();
-
-  hideLoading();
 }
 
 function generatePreviewHtml(manifest) {
@@ -1354,7 +1370,7 @@ function generatePreviewHtml(manifest) {
 <body>
   <h1>素材预览</h1>
   <div class="grid">
-    ${manifest.map(item => `<div class="card"><div class="preview"><img src="images/${item.file}" alt="${item.name}"></div><div class="info"><h3>${item.name}</h3><p>尺寸: ${item.width} x ${item.height}</p><p>坐标: (${item.sourceX}, ${item.sourceY})</p></div></div>`).join('')}
+    ${manifest.map(item => `<div class="card"><div class="preview"><img src="images/${item.file}" alt="${item.name}"></div><div class="info"><h3>${item.name}</h3><p>尺寸: ${item.w} x ${item.h}</p><p>坐标: (${item.x}, ${item.y})</p></div></div>`).join('')}
   </div>
 </body>
 </html>`;
@@ -1532,6 +1548,10 @@ const cropState = {
   fitH: 0,
 };
 
+const CROP_MIN_ZOOM = 1;
+const CROP_MAX_ZOOM = 8;
+const CROP_ZOOM_STEP = 1.25;
+
 const cropEls = {
   toolbar: null,
   hint: null,
@@ -1574,15 +1594,43 @@ function initManualCrop() {
   const cancelBtn = document.getElementById('crop-cancel-btn');
   if (cancelBtn) cancelBtn.addEventListener('click', exitCropMode);
 
+  // 缩放按钮
+  const zoomIn = document.getElementById('crop-zoom-in');
+  const zoomOut = document.getElementById('crop-zoom-out');
+  const zoomReset = document.getElementById('crop-zoom-reset');
+  if (zoomIn) zoomIn.addEventListener('click', () => stepZoom(CROP_ZOOM_STEP));
+  if (zoomOut) zoomOut.addEventListener('click', () => stepZoom(1 / CROP_ZOOM_STEP));
+  if (zoomReset) zoomReset.addEventListener('click', () => setCropZoom(1));
+
+  // 在预览容器内滚轮缩放（以鼠标位置为中心）
+  const previewContainer = document.getElementById('preview-container');
+  if (previewContainer) {
+    previewContainer.addEventListener('wheel', (e) => {
+      if (singleElements.transparentPreview.hidden) return;
+      e.preventDefault();
+      stepZoom(e.deltaY < 0 ? CROP_ZOOM_STEP : 1 / CROP_ZOOM_STEP, e.clientX, e.clientY);
+    }, { passive: false });
+    // 滚动时同步覆盖层（overlay 是 absolute，需跟随滚动重定位）
+    previewContainer.addEventListener('scroll', () => {
+      if (cropState.mode) { syncOverlayToImage(); drawOverlay(); }
+    });
+    // 非框选状态下：按住拖动平移图片
+    initPanPreview(previewContainer);
+  }
+
   // 覆盖canvas事件
   cropEls.overlay.addEventListener('pointerdown', onCropPointerDown);
   cropEls.overlay.addEventListener('pointermove', onCropPointerMove);
   cropEls.overlay.addEventListener('pointerup', onCropPointerUp);
   cropEls.overlay.addEventListener('pointerleave', onCropPointerUp);
 
-  // 窗口缩放时重新对齐覆盖层
+  // 窗口缩放时重新对齐覆盖层 / 重算适应尺寸
   window.addEventListener('resize', () => {
-    if (cropState.mode) syncOverlayToImage();
+    if (singleElements.transparentPreview && !singleElements.transparentPreview.hidden) {
+      setCropZoom(cropState.zoom);
+    } else if (cropState.mode) {
+      syncOverlayToImage();
+    }
   });
 
   // 确认对话框按钮
@@ -1639,6 +1687,203 @@ function exitCropMode() {
     cropEls.overlay.hidden = true;
   }
   if (cropEls.hint) cropEls.hint.textContent = '';
+}
+
+// ── 非框选状态下：按住拖动平移已放大的图片 ──
+function initPanPreview(container) {
+  if (!container) return;
+
+  let panning = false;
+  let startX = 0, startY = 0;
+  let startScrollLeft = 0, startScrollTop = 0;
+  let moved = false;
+
+  const canPan = () => {
+    if (cropState.mode) return false;
+    if (singleElements.transparentPreview.hidden) return false;
+    return container.classList.contains('zoomed');
+  };
+
+  const updateCursor = () => {
+    if (panning) { container.style.cursor = 'grabbing'; return; }
+    container.style.cursor = canPan() ? 'grab' : '';
+  };
+
+  const onMove = (e) => {
+    if (!panning) return;
+    const dx = e.clientX - startX;
+    const dy = e.clientY - startY;
+    if (!moved && Math.hypot(dx, dy) > 2) moved = true;
+    container.scrollLeft = startScrollLeft - dx;
+    container.scrollTop = startScrollTop - dy;
+  };
+  const onUp = () => {
+    if (!panning) return;
+    panning = false;
+    updateCursor();
+    document.body.style.userSelect = '';
+    window.removeEventListener('pointermove', onMove);
+    window.removeEventListener('pointerup', onUp);
+  };
+
+  container.addEventListener('pointerdown', (e) => {
+    if (e.button !== 0) return;
+    if (!canPan()) return;
+    panning = true;
+    moved = false;
+    startX = e.clientX;
+    startY = e.clientY;
+    startScrollLeft = container.scrollLeft;
+    startScrollTop = container.scrollTop;
+    updateCursor();
+    document.body.style.userSelect = 'none';
+    window.addEventListener('pointermove', onMove);
+    window.addEventListener('pointerup', onUp);
+  });
+
+  container.addEventListener('pointermove', () => { if (!panning) updateCursor(); });
+  container.addEventListener('pointerenter', updateCursor);
+
+  const img = singleElements.transparentPreview;
+  if (img) img.addEventListener('dragstart', (e) => e.preventDefault());
+}
+
+// ── 预览区 / 候选区 上下分隔条拖拽 ──
+function initPanelResizer() {
+  const resizer = document.getElementById('preview-candidates-resizer');
+  const previewSection = document.querySelector('.right-panel .preview-section');
+  const rightPanel = document.querySelector('.right-panel');
+  if (!resizer || !previewSection || !rightPanel) return;
+
+  let dragging = false;
+  let startY = 0;
+  let startH = 0;
+
+  const onMove = (e) => {
+    if (!dragging) return;
+    const dy = e.clientY - startY;
+    let h = startH + dy;
+    const maxH = rightPanel.clientHeight - 140;
+    h = Math.max(120, Math.min(h, Math.max(120, maxH)));
+    previewSection.style.flex = '0 0 ' + h + 'px';
+    if (singleElements.transparentPreview && !singleElements.transparentPreview.hidden) {
+      setCropZoom(cropState.zoom);
+    }
+  };
+  const onUp = () => {
+    if (!dragging) return;
+    dragging = false;
+    resizer.classList.remove('dragging');
+    document.body.style.userSelect = '';
+    document.body.style.cursor = '';
+    window.removeEventListener('pointermove', onMove);
+    window.removeEventListener('pointerup', onUp);
+  };
+
+  resizer.addEventListener('pointerdown', (e) => {
+    e.preventDefault();
+    dragging = true;
+    startY = e.clientY;
+    startH = previewSection.getBoundingClientRect().height;
+    resizer.classList.add('dragging');
+    document.body.style.userSelect = 'none';
+    document.body.style.cursor = 'row-resize';
+    window.addEventListener('pointermove', onMove);
+    window.addEventListener('pointerup', onUp);
+  });
+}
+
+// 计算「适应容器」时的基准显示尺寸（zoom=1）
+function computeFitSize() {
+  const src = singleState.processedImageData;
+  const container = document.getElementById('preview-container');
+  if (!src || !container) return;
+  const cs = getComputedStyle(container);
+  const padX = parseFloat(cs.paddingLeft) + parseFloat(cs.paddingRight);
+  const padY = parseFloat(cs.paddingTop) + parseFloat(cs.paddingBottom);
+  const availW = Math.max(1, container.clientWidth - padX);
+  const availH = Math.max(1, container.clientHeight - padY);
+  const ratio = Math.min(availW / src.width, availH / src.height, 1);
+  cropState.fitW = Math.max(1, Math.round(src.width * ratio));
+  cropState.fitH = Math.max(1, Math.round(src.height * ratio));
+}
+
+// 缩放图片显示尺寸。anchorClientX/Y（可选）：以该屏幕坐标为缩放焦点。
+function setCropZoom(zoom, anchorClientX, anchorClientY) {
+  const src = singleState.processedImageData;
+  const img = singleElements.transparentPreview;
+  const container = document.getElementById('preview-container');
+  if (!src || !img || img.hidden) return;
+
+  computeFitSize();
+  const prevZoom = cropState.zoom;
+  cropState.zoom = clampNum(zoom, CROP_MIN_ZOOM, CROP_MAX_ZOOM);
+
+  const dispW = Math.round(cropState.fitW * cropState.zoom);
+  const dispH = Math.round(cropState.fitH * cropState.zoom);
+
+  let focus = null;
+  if (anchorClientX != null && anchorClientY != null && cropState.zoom !== prevZoom) {
+    const iRect = img.getBoundingClientRect();
+    if (iRect.width > 0 && iRect.height > 0) {
+      focus = {
+        fx: (anchorClientX - iRect.left) / iRect.width,
+        fy: (anchorClientY - iRect.top) / iRect.height,
+        vx: anchorClientX - container.getBoundingClientRect().left,
+        vy: anchorClientY - container.getBoundingClientRect().top,
+      };
+      focus.fx = clampNum(focus.fx, 0, 1);
+      focus.fy = clampNum(focus.fy, 0, 1);
+    }
+  }
+
+  // zoom=1 用 CSS 自适应；放大时用显式宽高 + 容器滚动
+  if (cropState.zoom > 1.001) {
+    container.classList.add('zoomed');
+    img.style.width = dispW + 'px';
+    img.style.height = dispH + 'px';
+    // 四周留出约一屏缓冲，使图片任意位置都能拖到容器中央
+    const padX = Math.round(container.clientWidth * 0.9);
+    const padY = Math.round(container.clientHeight * 0.9);
+    container.style.setProperty('--pan-pad-x', padX + 'px');
+    container.style.setProperty('--pan-pad-y', padY + 'px');
+  } else {
+    container.classList.remove('zoomed');
+    img.style.width = '';
+    img.style.height = '';
+    container.style.removeProperty('--pan-pad-x');
+    container.style.removeProperty('--pan-pad-y');
+  }
+
+  if (cropEls.zoomVal) {
+    const realPct = Math.round((dispW / src.width) * 100);
+    cropEls.zoomVal.textContent = realPct + '%';
+  }
+
+  requestAnimationFrame(() => {
+    if (container.classList.contains('zoomed')) {
+      const newImgRect = img.getBoundingClientRect();
+      const cRect = container.getBoundingClientRect();
+      const imgLeftInContent = (newImgRect.left - cRect.left) + container.scrollLeft;
+      const imgTopInContent = (newImgRect.top - cRect.top) + container.scrollTop;
+      if (focus) {
+        const targetInImgX = focus.fx * newImgRect.width;
+        const targetInImgY = focus.fy * newImgRect.height;
+        container.scrollLeft = imgLeftInContent + targetInImgX - focus.vx;
+        container.scrollTop = imgTopInContent + targetInImgY - focus.vy;
+      } else if (prevZoom <= 1.001) {
+        container.scrollLeft = imgLeftInContent + newImgRect.width / 2 - container.clientWidth / 2;
+        container.scrollTop = imgTopInContent + newImgRect.height / 2 - container.clientHeight / 2;
+      }
+    }
+    syncOverlayToImage();
+    if (cropState.mode) drawOverlay();
+  });
+}
+
+function stepZoom(factor, anchorClientX, anchorClientY) {
+  if (singleElements.transparentPreview.hidden) return;
+  setCropZoom(cropState.zoom * factor, anchorClientX, anchorClientY);
 }
 
 // 让覆盖canvas精确盖在预览图的实际显示区域上
