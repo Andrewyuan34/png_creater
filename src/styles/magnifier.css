@@ -12,6 +12,10 @@
   background: #000;
 }
 .magnifier canvas { display: block; }
+/* 准星与中心框统一由 canvas 自绘，隐藏遗留的 DOM 准星避免重复 */
+.magnifier .crosshair-h,
+.magnifier .crosshair-v,
+.magnifier .center-box { display: none; }
 .magnifier .crosshair-h,
 .magnifier .crosshair-v {
   position: absolute;
